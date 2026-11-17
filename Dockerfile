@@ -1,30 +1,64 @@
-FROM python:3.13.8-slim-trixie
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# ==========================================
+# STAGE 1 : BUILD
+# ==========================================
+FROM python:3.12-slim-trixie AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        gcc \
-        libpq-dev \
-        curl && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# Mise à jour du système et outils de compilation
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+       gcc \
+       libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m appuser
+# Environnement Python isolé
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Dépendances installées en root, avant le code (meilleur cache)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=appuser:appuser . /app
+# Mise à jour des outils Python
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install -r requirements.txt
+
+
+# ==========================================
+# STAGE 2 : PRODUCTION
+# ==========================================
+FROM python:3.12-slim-trixie AS production
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+# Mise à jour du système et installation
+# des seules dépendances nécessaires
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+       libpq5 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Récupération de l'environnement Python
+COPY --from=builder /opt/venv /opt/venv
+
+# Utilisateur non privilégié
+RUN groupadd --system appgroup \
+    && useradd --system --gid appgroup --no-create-home appuser
+
+COPY --chown=appuser:appgroup . /app
 
 USER appuser
 
 EXPOSE 4000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:4000/ || exit 1
 
 CMD ["python", "main.py"]
